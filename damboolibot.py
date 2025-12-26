@@ -1,30 +1,33 @@
-import asyncio
 import random
-import threading
+import asyncio
 import os
-
 from telethon import TelegramClient, events
 from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler
-from fastapi import FastAPI
-import uvicorn
+from telegram.ext import (
+    ApplicationBuilder,
+    ContextTypes,
+    CommandHandler
+)
+from aiohttp import web
 
 # -------- CONFIG --------
-API_ID = 34384738
-API_HASH = "5ec5a6a4d89e2f50f76a9ce62300e19a"
-BOT_TOKEN = "7840299522:AAGM85M-jPfOdWJmfWVeVmr6VMKclnwHSKU"
+API_ID = int(os.environ.get("API_ID", 34384738))
+API_HASH = os.environ.get("API_HASH", "5ec5a6a4d89e2f50f76a9ce62300e19a")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "7840299522:AAGM85M-jPfOdWJmfWVeVmr6VMKclnwHSKU")
 
-CHANNEL = "dambouli_kosak"
+CHANNEL = "dambouli_kosak"        # بدون @
 CHANNEL_USERNAME = "@dambouli_kosak"
+
 INDEX_FILE = "audio_ids.txt"
 # ------------------------
 
 audio_ids = set()
 
-# ---------- TELETHON ----------
+# ---------- TELETHON PART ----------
 tg_client = TelegramClient("indexer", API_ID, API_HASH)
 
 async def index_channel():
+    print("Indexing channel history...")
     async for msg in tg_client.iter_messages(CHANNEL):
         if msg.audio:
             audio_ids.add(msg.id)
@@ -41,7 +44,7 @@ async def new_audio_handler(event):
 def save_ids():
     with open(INDEX_FILE, "w") as f:
         for i in audio_ids:
-            f.write(f"{i}\n")
+            f.write(str(i) + "\n")
 
 def load_ids():
     try:
@@ -51,18 +54,15 @@ def load_ids():
     except FileNotFoundError:
         pass
 
-async def telethon_runner():
-    await tg_client.start()
-    await index_channel()
-    await tg_client.run_until_disconnected()
-
-# ---------- BOT ----------
+# ---------- BOT PART ----------
 async def random_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print("one person requested a song")
     if not audio_ids:
         await update.message.reply_text("هنوز آهنگی پیدا نشد 🎵")
         return
 
     msg_id = random.choice(list(audio_ids))
+
     await context.bot.forward_message(
         chat_id=update.effective_chat.id,
         from_chat_id=CHANNEL_USERNAME,
@@ -70,43 +70,62 @@ async def random_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "سلام 👋\nبا /random یه آهنگ رندوم بگیر 🎶"
-    )
+    print("one person started the bot")
+    welcome_text = """
+سلام سلام! 👋
+به دنیای دامبولی و کصکلک خوش اومدی 🎶
+من از این به بعد همکار هوشمند علی هستم 😎
 
-def start_bot():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("random", random_song))
-    app.add_handler(CommandHandler("start", start))
-    app.run_polling()
+اگه دلت یه آهنگ رندوم از کانال فوق‌العاده‌ی 
+دامبولی کصک می‌خواد، فقط کافیه بزنی:
+/random
 
-# ---------- WEB ----------
-web_app = FastAPI()
+هرموقع حس کردی غم داری کافیه این دکمه رو بزنی تا قر رو بیارم به خونه‌ت! 😏
+راستی، تا ابد میتونم برات آهنگ بفرستم پس من رو دور ننداز 💿✨
+اگه با چنل فوق‌العاده‌ی دامبولی کصک آشنایی نداره هم میتونی با لینک زیر جوین بدی:
+@dambouli_kosak
+"""
+    await update.message.reply_text(welcome_text)
 
-@web_app.get("/")
-def root():
-    return {
-        "status": "ok",
-        "audios": len(audio_ids)
-    }
+# ---------- HEALTH SERVER ----------
+async def health_server():
+    async def handle(request):
+        return web.Response(text="OK")
+
+    app = web.Application()
+    app.router.add_get("/", handle)
+
+    port = int(os.environ.get("PORT", 8080))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"Health server running on port {port}")
+
+# ---------- TELETHON RUNNER ----------
+async def telethon_runner():
+    await tg_client.start()
+    await index_channel()
+    await tg_client.run_until_disconnected()
 
 # ---------- MAIN ----------
 def main():
     load_ids()
+    loop = asyncio.get_event_loop()
 
-    # Telethon در loop جدا
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    # Telethon
     loop.create_task(telethon_runner())
 
-    threading.Thread(target=loop.run_forever, daemon=True).start()
+    # Health server
+    loop.create_task(health_server())
 
-    # Bot در thread جدا
-    threading.Thread(target=start_bot, daemon=True).start()
+    # Telegram Bot
+    bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+    bot_app.add_handler(CommandHandler("random", random_song))
+    bot_app.add_handler(CommandHandler("start", start))
 
-    # Web server (برای Render)
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(web_app, host="0.0.0.0", port=port)
+    print("Bot is running...")
+    bot_app.run_polling()
 
 if __name__ == "__main__":
     main()
