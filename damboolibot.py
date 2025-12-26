@@ -1,31 +1,30 @@
-import random
 import asyncio
+import random
+import threading
+import os
+
 from telethon import TelegramClient, events
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    ContextTypes,
-    CommandHandler
-)
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler
+from fastapi import FastAPI
+import uvicorn
 
 # -------- CONFIG --------
 API_ID = 34384738
 API_HASH = "5ec5a6a4d89e2f50f76a9ce62300e19a"
 BOT_TOKEN = "7840299522:AAGM85M-jPfOdWJmfWVeVmr6VMKclnwHSKU"
 
-CHANNEL = "dambouli_kosak"        # بدون @
+CHANNEL = "dambouli_kosak"
 CHANNEL_USERNAME = "@dambouli_kosak"
-
 INDEX_FILE = "audio_ids.txt"
 # ------------------------
 
 audio_ids = set()
 
-# ---------- TELETHON PART ----------
+# ---------- TELETHON ----------
 tg_client = TelegramClient("indexer", API_ID, API_HASH)
 
 async def index_channel():
-    print("Indexing channel history...")
     async for msg in tg_client.iter_messages(CHANNEL):
         if msg.audio:
             audio_ids.add(msg.id)
@@ -42,7 +41,7 @@ async def new_audio_handler(event):
 def save_ids():
     with open(INDEX_FILE, "w") as f:
         for i in audio_ids:
-            f.write(str(i) + "\n")
+            f.write(f"{i}\n")
 
 def load_ids():
     try:
@@ -52,66 +51,62 @@ def load_ids():
     except FileNotFoundError:
         pass
 
-# ---------- BOT PART ----------
+async def telethon_runner():
+    await tg_client.start()
+    await index_channel()
+    await tg_client.run_until_disconnected()
+
+# ---------- BOT ----------
 async def random_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("one person requested a song")
     if not audio_ids:
         await update.message.reply_text("هنوز آهنگی پیدا نشد 🎵")
         return
 
     msg_id = random.choice(list(audio_ids))
-
     await context.bot.forward_message(
         chat_id=update.effective_chat.id,
         from_chat_id=CHANNEL_USERNAME,
         message_id=msg_id
     )
 
-# ---------- START HANDLER ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("one person started the bot")
-    welcome_text = """
-سلام سلام! 👋
-به دنیای دامبولی و کصکلک خوش اومدی 🎶
-من از این به بعد همکار هوشمند علی هستم 😎
+    await update.message.reply_text(
+        "سلام 👋\nبا /random یه آهنگ رندوم بگیر 🎶"
+    )
 
-اگه دلت یه آهنگ رندوم از کانال فوق‌العاده‌ی 
-دامبولی کصک می‌خواد، فقط کافیه بزنی:
-/random
+def start_bot():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("random", random_song))
+    app.add_handler(CommandHandler("start", start))
+    app.run_polling()
 
-هرموقع حس کردی غم داری کافیه این دکمه رو بزنی تا قر رو بیارم به خونه‌ت! 😏
-راستی، تا ابد میتونم برات آهنگ بفرستم پس من رو دور ننداز 💿✨
-اگه با چنل فوق‌العاده‌ی دامبولی کصک آشنایی نداره هم میتونی با لینک زیر جوین بدی:
-@dambouli_kosak
-"""
-    await update.message.reply_text(welcome_text)
+# ---------- WEB ----------
+web_app = FastAPI()
 
-# اضافه کردن به بات
-
-
+@web_app.get("/")
+def root():
+    return {
+        "status": "ok",
+        "audios": len(audio_ids)
+    }
 
 # ---------- MAIN ----------
-async def telethon_runner():
-    await tg_client.start()
-    await index_channel()
-    await tg_client.run_until_disconnected()
-
 def main():
     load_ids()
 
-    # Telethon توی بک‌گراند
-    loop = asyncio.get_event_loop()
+    # Telethon در loop جدا
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     loop.create_task(telethon_runner())
 
-    # Bot (blocking – درست)
-    bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
-    bot_app.add_handler(CommandHandler("random", random_song))
-    bot_app.add_handler(CommandHandler("start", start))
+    threading.Thread(target=loop.run_forever, daemon=True).start()
 
-    print("Bot is running...")
-    bot_app.run_polling()
+    # Bot در thread جدا
+    threading.Thread(target=start_bot, daemon=True).start()
+
+    # Web server (برای Render)
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(web_app, host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
     main()
-
-
